@@ -1,0 +1,168 @@
+---
+- name: Install SW
+  hosts: Virtual
+  become: yes
+
+  vars:
+    jenkins_user: admin
+    jenkins_pass: admin
+    jenkins_homedir: /home/jenkins
+
+  tasks:
+  - name: Test
+    debug: var=ansible_os_family
+
+  - name: Add Docker GPG key
+    apt_key: url=https://download.docker.com/linux/ubuntu/gpg
+
+  - name: Update apt-get repo and cache
+    apt:
+      update_cache=yes
+      force_apt_get=yes
+
+  - name: Install basic list of packages
+    apt:
+      name: ['apt-transport-https','ca-certificates','curl','gnupg2','software-properties-common','openjdk-8-jre-headless']
+      state: present
+      update_cache: yes
+
+  - name: Add Docker APT repository
+    apt_repository:
+      repo: deb [arch=amd64] https://download.docker.com/linux/{{ansible_distribution|lower}} {{ansible_distribution_release}} stable
+
+  - name: Install Docker packages
+    apt:
+      name: ['docker-ce','docker-ce-cli','containerd.io']
+      state: present
+
+  - name: Install Docker-compose
+    shell: curl -L "https://github.com/docker/compose/releases/download/1.24.1/docker-compose-Linux-x86_64" -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose && ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
+    args:
+      warn: false
+
+  - name: Add Jenkins repository key
+    apt_key:  url='https://pkg.jenkins.io/debian/jenkins.io.key'
+
+  - name: Add Jenkins repository
+    apt_repository:
+      repo: 'deb https://pkg.jenkins.io/debian-stable binary/'
+      state: present
+      update_cache: yes
+
+  - name: Install Jenkins
+    apt:
+      name: jenkins
+      state: present
+      update_cache: yes
+
+  - name: Make Jenkins SU
+    shell: usermod -a -G sudo jenkins
+
+  - name: Add Jenkins to docker-group
+    shell: usermod -a -G docker jenkins
+
+  - name: Set JENKINS_HOME directory
+    lineinfile:
+      create: true
+      dest: "/etc/default/jenkins"
+      line: "JENKINS_HOME={{ jenkins_homedir }}"
+      regexp: '^JENKINS_HOME='
+      state: present
+
+  - name: Ensure correct ownership of JENKINS_HOME directory
+    file:
+      path: "{{ jenkins_homedir }}"
+      owner: "jenkins"
+      group: "jenkins"
+      mode: 0755
+      state: directory
+
+  - name: Turn off jenkins setup wizard
+    lineinfile:
+      dest: /etc/default/jenkins
+      regexp: '^JAVA_ARGS='
+      line: 'JAVA_ARGS="-Djava.awt.headless=true -Djenkins.install.runSetupWizard=false"'
+
+  - name: Jenkins restart
+    service:
+      name: jenkins
+      state: restarted
+
+
+  - name: Wait for 30 sec till the Jenkins is ready
+    pause:
+      seconds: 30
+
+  - name: Jenkins unlock and add admin user
+    jenkins_script:
+        script: |
+          import jenkins.model.*
+          import hudson.security.*
+          def instance = Jenkins.getInstance()
+          def hudsonRealm = new HudsonPrivateSecurityRealm(false)
+          hudsonRealm.createAccount('{{ jenkins_user }}', '{{ jenkins_pass }}')
+          instance.setSecurityRealm(hudsonRealm)
+          def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+          strategy.setAllowAnonymousRead(false)
+          instance.setAuthorizationStrategy(strategy)
+          instance.save()
+
+
+  - name: Install Jenkins plugins
+    jenkins_plugin:
+      name: "{{ item }}"
+      timeout: 150
+      url_username: "{{ jenkins_user }}"
+      url_password: "{{ jenkins_pass }}"
+      url: http://127.0.0.1:8080
+    with_items:
+      - github
+      - greenballs
+
+
+  - name: Jenkins restart
+    service:
+      name: jenkins
+      state: restarted
+
+
+  - name: Wait for 30 sec till the jenkins is ready
+    pause:
+      seconds: 30
+
+  - name: Enabling Jenkins execute setup commands without password
+    lineinfile:
+      dest: /etc/sudoers
+      regexp: '^sudo   ALL'
+      insertafter: '^%sudo   ALL'
+      line: 'jenkins ALL=(ALL) NOPASSWD: ALL'
+      state: present
+
+
+
+
+  - name: Copying Github credentials file
+    copy:
+      src: ./credential.xml
+      dest: /home/jenkins/credential.xml
+      mode: 0777
+
+  - name: Copying Jenkins job file 
+    copy:
+      src: ./job_template.xml
+      dest: /home/jenkins/job_template.xml
+      mode: 0777
+
+  - name: Download Jenkins CLI file
+    get_url:
+      url: http://127.0.0.1:8080/jnlpJars/jenkins-cli.jar
+      dest: /home/jenkins/jenkins-cli.jar
+      mode: '777'
+
+  - name: Adding Github credentials to Jenkins
+    shell: java -jar /home/jenkins/jenkins-cli.jar -auth admin:admin -s http://127.0.0.1:8080/ create-credentials-by-xml system::system::jenkins _ < /home/jenkins/credential.xml
+
+  - name: Adding Job to Jenkins
+    shell: java -jar /home/jenkins/jenkins-cli.jar -auth admin:admin -s "http://127.0.0.1:8080" create-job Lab2 < /home/jenkins/job_template.xml
+
+
