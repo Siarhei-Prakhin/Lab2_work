@@ -51,7 +51,7 @@
 
   - name: Install Jenkins
     apt:
-      name: jenkins
+      name: jenkins=2.277.4
       state: present
       update_cache: yes
 
